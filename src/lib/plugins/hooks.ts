@@ -8,6 +8,7 @@
  */
 
 import { logger } from "../../../open-sse/utils/logger.ts";
+import { getPluginByName } from "../db/plugins";
 
 const log = logger("PLUGIN_HOOKS");
 
@@ -191,7 +192,20 @@ export async function emitHookBlocking(
       // Chain the payload: each handler must see the body/metadata as mutated by
       // previous handlers, not the original static payload — otherwise plugin B
       // can't observe plugin A's changes. (#3286)
-      const currentPayload = { ...ctx, body: mergedBody, metadata: mergedMetadata };
+      //
+      // Each plugin also gets its own stored config attached here. ctx itself never
+      // carries config — the request entry point (open-sse/handlers/chatCore/
+      // pluginOnRequest.ts) never populates it, and config is inherently per-plugin,
+      // not shared across the hook chain, so it can't be spread in once from ctx the
+      // way body/metadata are. Without this, every plugin's ctx.config is always
+      // undefined regardless of what's stored via plugin_configure / configSchema.
+      const pluginConfig = getPluginByName(reg.pluginName)?.config ?? {};
+      const currentPayload = {
+        ...ctx,
+        body: mergedBody,
+        metadata: mergedMetadata,
+        config: pluginConfig,
+      };
       const result = await reg.handler(currentPayload);
       if (result && typeof result === "object") {
         if ("body" in result) mergedBody = (result as Record<string, unknown>).body;
@@ -234,6 +248,11 @@ export interface PluginContext {
    *  client (trace ids, correlation ids, session markers). */
   headers?: Record<string, string | string[] | undefined>;
   metadata: Record<string, unknown>;
+  /** This plugin's stored configSchema values (see plugin.json's configSchema and
+   *  the plugin_configure API/CLI). Attached per-handler in emitHookBlocking, keyed
+   *  by that handler's own plugin name — never populated by the request entry point
+   *  itself, since config is inherently per-plugin, not per-request. */
+  config?: Record<string, unknown>;
 }
 
 export interface PluginResult {
